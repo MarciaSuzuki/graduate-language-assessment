@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'Graduate Studies Language Proficiency Assessment — University of the Nations',
-  description: 'Oral Proficiency Interview for UofN Graduate Admissions',
+  title: 'Language Assessment Interview — University of the Nations',
+  description: 'A progressive oral proficiency interview that identifies a speaker’s current level in the selected language.',
 };
 
 export default function RootLayout({ children }) {

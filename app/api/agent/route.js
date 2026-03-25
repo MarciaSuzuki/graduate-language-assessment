@@ -3,36 +3,101 @@ import { NextResponse } from 'next/server';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ── ACTFL Level helpers ──────────────────────────────────────────────────────
-
 const LEVELS = [
-  'novice_low','novice_mid','novice_high',
-  'intermediate_low','intermediate_mid','intermediate_high',
-  'advanced_low','advanced_mid','advanced_high',
-  'superior','distinguished',
+  'novice_low', 'novice_mid', 'novice_high',
+  'intermediate_low', 'intermediate_mid', 'intermediate_high',
+  'advanced_low', 'advanced_mid', 'advanced_high',
+  'superior', 'distinguished',
 ];
 
-function idx(level) { return LEVELS.indexOf(level); }
+const LEVEL_DISPLAY = {
+  novice_low: 'Novice Low',
+  novice_mid: 'Novice Mid',
+  novice_high: 'Novice High',
+  intermediate_low: 'Intermediate Low',
+  intermediate_mid: 'Intermediate Mid',
+  intermediate_high: 'Intermediate High',
+  advanced_low: 'Advanced Low',
+  advanced_mid: 'Advanced Mid',
+  advanced_high: 'Advanced High',
+  superior: 'Superior',
+  distinguished: 'Distinguished',
+};
 
-function shiftLevel(level, delta) {
-  const i = Math.max(0, Math.min(LEVELS.length - 1, idx(level) + delta));
-  return LEVELS[i];
+const MAX_QUESTIONS = 24;
+
+function idx(level) {
+  return LEVELS.indexOf(level);
 }
 
-// ── System prompts ───────────────────────────────────────────────────────────
+function isLevel(level) {
+  return LEVELS.includes(level);
+}
+
+function shiftLevel(level, delta) {
+  const currentIndex = isLevel(level) ? idx(level) : 0;
+  const nextIndex = Math.max(0, Math.min(LEVELS.length - 1, currentIndex + delta));
+  return LEVELS[nextIndex];
+}
+
+function normalizeLevel(level, fallback = 'novice_low') {
+  return isLevel(level) ? level : fallback;
+}
+
+function sanitizeNextLevel(currentLevel, nextLevel, probeDirection) {
+  if (!isLevel(nextLevel)) {
+    if (probeDirection === 'up') return shiftLevel(currentLevel, 1);
+    if (probeDirection === 'down') return shiftLevel(currentLevel, -1);
+    return currentLevel;
+  }
+
+  const distance = Math.abs(idx(nextLevel) - idx(currentLevel));
+  if (distance > 1) {
+    if (probeDirection === 'up') return shiftLevel(currentLevel, 1);
+    if (probeDirection === 'down') return shiftLevel(currentLevel, -1);
+    return currentLevel;
+  }
+
+  return nextLevel;
+}
+
+function appendJourney(journey = [], ...levels) {
+  const nextJourney = [...journey];
+
+  levels.forEach((level) => {
+    if (!isLevel(level)) return;
+    if (nextJourney[nextJourney.length - 1] !== level) {
+      nextJourney.push(level);
+    }
+  });
+
+  return nextJourney;
+}
+
+function inferFinalLevel(state = {}) {
+  if (isLevel(state.highestSustainedLevel)) return state.highestSustainedLevel;
+  if (isLevel(state.breakdownLevel)) return shiftLevel(state.breakdownLevel, -1);
+  return normalizeLevel(state.currentLevel, 'novice_low');
+}
+
+function inferNextTarget(state = {}, finalLevel) {
+  if (isLevel(state.breakdownLevel)) return state.breakdownLevel;
+  if (finalLevel === 'distinguished') return 'distinguished';
+  return shiftLevel(finalLevel, 1);
+}
 
 function intakePrompt(language) {
-  return `You are a warm, professional voice interviewer for the University of the Nations (UofN/YWAM) Graduate Studies Language Proficiency Assessment.
+  return `You are a warm, professional voice interviewer for the University of the Nations (UofN/YWAM) Language Proficiency Assessment.
 
 CRITICAL: You MUST conduct this ENTIRE conversation in ${language}. Every single word you say must be in ${language}. Do NOT use English at any point, even for greetings, unless ${language} IS English.
 
-Your task: Have a brief, friendly conversation to learn about the applicant before the formal language assessment begins. You are speaking via voice, so keep every response to 2–3 natural sentences — no bullet points, no lists.
+Your task: Have a brief, friendly conversation to learn about the speaker before the formal language assessment begins. You are speaking via voice, so keep every response to 2-3 natural sentences - no bullet points, no lists.
 
-Gather the following over 4–6 exchanges (don't rush, be conversational):
+Gather the following over 4-6 exchanges (don't rush, be conversational):
 1. Their name
 2. Country of origin and cultural/linguistic background
 3. How long they have been using or studying ${language}
-4. Their ministry, professional, or academic purpose for needing ${language}
+4. Why they want to use, improve, or be assessed in ${language}
 
 Be warm and affirming. Welcome them to the University of the Nations. Do NOT ask linguistic test questions yet.
 
@@ -41,159 +106,165 @@ When you have gathered all four points, append exactly: [[INTAKE_COMPLETE]]
 Output ONLY natural spoken text in ${language}. No markdown, no labels.`;
 }
 
-function placementPrompt(language) {
-  return `You are an Oral Proficiency Interview examiner. Based on the intake conversation summary below, determine the best starting probe level for a ${language} oral proficiency interview.
+function transitionPrompt(language) {
+  return `You are preparing a participant for a progressive ACTFL Oral Proficiency Interview in ${language}.
+
+This assessment ALWAYS begins at Novice Low and then climbs one level at a time toward the highest level the speaker can sustain. You are NOT estimating a higher starting band.
 
 Respond with ONLY raw JSON (no markdown fences, no extra text):
-{"startingLevel":"","rationale":"","transitionText":""}
+{"startingLevel":"novice_low","rationale":"","transitionText":""}
 
-startingLevel must be one of: novice_low novice_mid novice_high intermediate_low intermediate_mid intermediate_high advanced_low advanced_mid advanced_high superior
+rationale: one short English sentence explaining that this version always starts at Novice Low and progresses upward.
 
-rationale: one sentence in English explaining your choice (for internal use only).
-
-transitionText: CRITICAL — write 2–3 warm, voice-friendly sentences in ${language} ONLY. Do NOT use English in transitionText unless ${language} IS English. The text must: (a) acknowledge the applicant's background, (b) explain that the formal language assessment is starting now, (c) invite them to speak naturally.
-
-PLACEMENT GUIDELINES (err one level below your estimate to establish floor properly):
-• No formal study / very limited use → intermediate_low (graduate floor)
-• 1–3 years formal study → intermediate_mid
-• 3–5 years or time spent living in a ${language}-speaking country → intermediate_high
-• 5+ years of professional / ministry use → advanced_low
-• Near-native competence → advanced_mid`;
+transitionText: CRITICAL - write 2-3 warm, voice-friendly sentences in ${language} ONLY. Do NOT use English in transitionText unless ${language} IS English. The text must:
+(a) acknowledge the speaker's background,
+(b) explain that the formal assessment is starting at the novice level,
+(c) explain that the interview will gradually move upward toward more advanced tasks,
+(d) invite them to speak naturally and do their best.`;
 }
 
 function interviewerPrompt(language, state) {
   const {
-    currentLevel = 'intermediate_mid',
+    currentLevel = 'novice_low',
     questionsAtLevel = 0,
     totalQuestions = 0,
-    floorLevel,
-    ceilingLevel,
+    highestSustainedLevel,
+    breakdownLevel,
     scoringNotes = [],
   } = state;
 
-  return `You are an Oral Proficiency Interview (OPI) examiner conducting a ${language} proficiency assessment for a University of the Nations graduate applicant.
+  return `You are an ACTFL Oral Proficiency Interview (OPI) examiner conducting a ${language} proficiency assessment for a University of the Nations participant.
 
-CRITICAL: You MUST speak ONLY in ${language} throughout this interview. Every word of your "agentText" must be in ${language}. Do NOT use English unless ${language} IS English.
+CRITICAL: You MUST speak ONLY in ${language} throughout this interview. Every word of "agentText" must be in ${language}. Do NOT use English unless ${language} IS English.
 
-── CURRENT STATE ──
-Probe level     : ${currentLevel}
-Questions at this level: ${questionsAtLevel}
-Total questions : ${totalQuestions}
-Floor (highest sustained): ${floorLevel ?? 'not yet established'}
-Ceiling (first breakdown): ${ceilingLevel ?? 'not yet established'}
-Last 3 scoring notes: ${scoringNotes.slice(-3).join(' | ') || 'none yet'}
+This version of the assessment is a progressive ladder:
+- It ALWAYS begins at Novice Low.
+- It climbs ONE level at a time.
+- It is trying to identify the highest level the speaker can clearly sustain.
+- It may drop ONE level after a breakdown to confirm the ceiling and floor.
 
-── ACTFL PROFICIENCY CRITERIA ──
+CURRENT STATE
+- Current probe level: ${currentLevel}
+- Questions already asked at this level: ${questionsAtLevel}
+- Total answered questions: ${totalQuestions}
+- Highest sustained level so far: ${highestSustainedLevel ?? 'not yet established'}
+- Breakdown level so far: ${breakdownLevel ?? 'not yet established'}
+- Last 3 scoring notes: ${scoringNotes.slice(-3).join(' | ') || 'none yet'}
+
+ACTFL CRITERIA
 
 NOVICE (Low/Mid/High)
-• Isolated words, memorized phrases only — no real sentence creation
-• Familiar topics: greetings, numbers, colors, immediate needs
-• Cannot sustain a conversation; relies on repetition and gestures
+- Isolated words, memorized phrases, predictable communication
+- Familiar topics only
+- Cannot sustain paragraph-level speech
 
 INTERMEDIATE Low
-• Creates simple sentences beyond memorization
-• Handles basic personal questions (family, daily routine)
-• Present tense; very familiar topics; sentence-level language
+- Creates simple sentences
+- Handles basic personal topics in the present
+- Very limited narration or complication
 
 INTERMEDIATE Mid
-• Handles simple conversational exchanges
-• Some attempts at past or future reference
-• Able to describe familiar situations; mostly sentence-level
+- Handles simple conversation
+- Can describe familiar routines and some past/future reference
+- Mostly sentence-level speech
 
 INTERMEDIATE High
-• Handles unexpected complications
-• Paragraph-level attempts; narrates simple events
-• May break down on abstract or unfamiliar topics
+- Begins to narrate and handle complications
+- Reaches toward paragraph-level speech
+- Breaks down under sustained abstract demands
 
 ADVANCED Low
-• Narrates and describes in past, present, and future
-• Paragraph-level discourse; handles complications with effort
-• Some gaps in tense consistency or discourse organization
+- Narrates and describes in major time frames
+- Produces paragraph-level discourse on familiar topics
+- Handles complications with effort
 
 ADVANCED Mid
-• Sustained paragraph-level narrative on concrete topics
-• Beginning to engage abstract topics; good tense control
-• Well-organized discourse; handles most familiar situations easily
+- Sustained paragraph-level discourse
+- Good control on concrete and some abstract topics
+- Better organization and detail
 
 ADVANCED High
-• Discusses abstract topics; supports opinions
-• Extended, organized discourse
-• Occasional precision errors near Superior boundary
+- Discusses abstract issues with support and structure
+- Strong extended discourse
+- Occasional gaps near the Superior boundary
 
 SUPERIOR
-• Precise, nuanced handling of abstract/professional topics
-• Hypothesizes, argues positions, discusses concepts
-• Well-organized extended discourse; near-native pragmatics
+- Handles abstract, professional, and hypothetical discussion
+- Organizes nuanced arguments and analysis
+- Strong precision and flexibility
 
 DISTINGUISHED
-• Sophisticated rhetorical precision; audience-tailored language
-• Effectively approximates educated native speaker
-• Nuanced cultural and register competence
+- Sophisticated rhetorical precision
+- Strong register control and cultural nuance
+- Approaches an educated native-speaker range
 
-── YOUR TASK ──
-1. Acknowledge the student's previous response naturally (1 sentence, conversational).
-2. Ask ONE new question calibrated to the current probe level (see topics below).
-3. Keep your entire output to 2–4 sentences — this is a voice conversation.
-4. Evaluate the student's previous response against the ACTFL criteria above.
-5. Decide probe direction.
+YOUR TASK
+1. Evaluate the speaker's previous response against the CURRENT probe level.
+2. Decide whether to move up, stay, move down, or end.
+3. Ask the NEXT question at the level you want to test next.
+4. Keep the whole response voice-friendly and concise.
 
-PROBE LOGIC:
-• 3 strong responses at this level → probe UP (raise currentLevel by 1)
-• 2 clearly weak responses at this level → probe DOWN (lower by 1)
-• One striking mismatch (far above or below) → adjust immediately
-• End conditions: both floor AND ceiling established, OR totalQuestions ≥ 20
+LADDER RULES
+- Use "up" when the response clearly sustains the current level and the next question should be ONE level higher.
+- Use "maintain" when you need one more response at the same level.
+- Use "down" when the response clearly breaks down at this level and the next question should be ONE level lower to confirm the highest sustained level.
+- Use "end" when the highest sustained level is clear, or when Distinguished has been sustained, or when the interview has reached its natural end.
+- NEVER skip levels. nextLevel must be either the same level, one level up, or one level down.
+- If probeDirection is "end", do NOT ask another question. agentText should be a short spoken wrap-up for the interview portion.
 
-SAMPLE QUESTION TOPICS BY LEVEL:
-novice       : "What is your name? What country are you from? What do you like to eat?"
-int_low      : "Tell me about your family. What do you do every day?"
-int_mid      : "Describe your hometown. What did you do last weekend?"
-int_high     : "Tell me about a challenge you faced. What would you do if a problem arose at work?"
-adv_low      : "Tell me the story of how you came to your current ministry or work. How did that situation develop over time?"
-adv_mid      : "What do you see as the main challenges in cross-cultural ministry? How do language barriers affect that work?"
-adv_high     : "Discuss the relationship between language and cultural identity. What is your philosophy of language learning?"
-superior     : "Analyze the linguistic and theological challenges of translating Scripture for oral, zero-literacy communities. Defend a methodology."
-distinguished: "How do competing translation theories — formal equivalence versus functional equivalence — reflect broader epistemological commitments? Evaluate their practical implications for minority language communities."
+SAMPLE TASKS BY LEVEL
+- novice_low: name, origin, foods, numbers, simple preferences
+- novice_mid: family, home, daily likes/dislikes
+- novice_high: routines, simple present descriptions, simple needs
+- intermediate_low: daily schedule, family roles, familiar places
+- intermediate_mid: hometown, last weekend, simple plans
+- intermediate_high: unexpected problems, short narration, simple opinions
+- advanced_low: tell a detailed story, explain how a situation developed over time
+- advanced_mid: work, study, or community challenges, compare approaches, explain causes and effects
+- advanced_high: language and identity, education, technology, or social change with supported abstract discussion
+- superior: analyze cultural complexity, public policy, leadership, or communication challenges with hypothesis and argument
+- distinguished: compare competing frameworks, tailor rhetoric to different audiences, and evaluate nuanced tradeoffs
 
 Respond with ONLY raw JSON (no markdown fences, no extra text):
 {
-  "agentText": "Acknowledgment + question in natural voice speech",
+  "agentText": "If continuing: acknowledgment plus one next question in ${language}. If ending: a short spoken wrap-up in ${language}.",
   "probeDirection": "up|maintain|down|end",
-  "levelIndicator": "${currentLevel}",
-  "scoringNote": "Brief note: text type produced, grammar control, vocabulary range, fluency observed",
+  "nextLevel": "one valid ACTFL level slug",
+  "scoringNote": "Brief English note about text type, control, fluency, vocabulary, and why the next move was chosen",
   "shouldEnd": false
 }`;
 }
 
-function reportPrompt(language, state) {
-  const { currentLevel, floorLevel, ceilingLevel, scoringNotes = [], totalQuestions } = state;
-  return `You are an ACTFL OPI examiner writing the final proficiency assessment report for a ${language} interview conducted for University of the Nations Graduate Studies admissions.
+function reportPrompt(language, state, inferredFinalLevel, inferredNextTarget) {
+  const rangeLabel = `Novice Low -> ${LEVEL_DISPLAY[inferredFinalLevel]}`;
 
-INTERVIEW DATA:
-• All scoring notes (chronological): ${scoringNotes.join(' | ')}
-• Floor level (highest sustained):   ${floorLevel ?? currentLevel}
-• Ceiling level (first breakdown):   ${ceilingLevel ?? 'not clearly established'}
-• Final probe level:                 ${currentLevel}
-• Total questions administered:      ${totalQuestions}
+  return `You are an ACTFL OPI examiner writing the final proficiency assessment report for a progressive ${language} interview conducted for University of the Nations.
 
-ADMISSIONS THRESHOLDS:
-• "ready"              → Advanced Low or above  (handles graduate academic discourse)
-• "conditionally_ready"→ Intermediate High      (sufficient with language support plan)
-• "needs_development"  → Intermediate Mid or below (not yet ready for graduate-level study in this language)
+This version of the interview started at Novice Low and moved upward until the highest sustainable level was identified.
+The goal is to report proficiency only. Do NOT mention admissions, selection, readiness, or special placement.
+
+INTERVIEW DATA
+- All scoring notes (chronological): ${state.scoringNotes?.join(' | ') || 'none recorded'}
+- Highest sustained level: ${state.highestSustainedLevel ?? inferredFinalLevel}
+- Breakdown level: ${state.breakdownLevel ?? 'not clearly established'}
+- Final inferred level: ${inferredFinalLevel}
+- Ladder journey: ${(state.ladderJourney || []).join(' -> ') || 'novice_low'}
+- Total questions answered: ${state.totalQuestions ?? 0}
 
 Respond with ONLY raw JSON (no markdown fences, no extra text):
 {
   "finalLevel": "e.g. advanced_low",
   "levelDisplay": "e.g. Advanced Low",
-  "summary": "2–3 sentence overview of overall performance",
+  "rangeLabel": "${rangeLabel}",
+  "progressionSummary": "2-3 sentences summarizing how the speaker moved from Novice Low upward through the ladder",
+  "summary": "2-3 sentence overview of overall performance",
   "strengths": ["strength 1", "strength 2", "strength 3"],
   "areasForGrowth": ["area 1", "area 2"],
-  "admissionsRecommendation": "ready|conditionally_ready|needs_development",
-  "admissionsNote": "1–2 sentence note for the admissions committee",
-  "closingText": "Warm 2–3 sentence spoken message to the applicant: affirm their effort, mention they will be notified of results, and encourage them."
+  "nextTarget": "${inferredNextTarget}",
+  "examinerNote": "1-2 sentence note describing the speaker's current proficiency and the next area to develop",
+  "closingText": "Warm 2-3 sentence spoken message to the speaker: affirm their effort, explain that the interview is complete, and encourage them."
 }`;
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function safeParseJSON(text) {
   try {
@@ -212,17 +283,15 @@ async function callClaude(system, messages, maxTokens = 800) {
     system,
     messages,
   });
+
   return response.content[0].text;
 }
-
-// ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request) {
   try {
     const body = await request.json();
     const { phase, language, history = [], state = {}, userInput } = body;
 
-    // ── INTAKE ──────────────────────────────────────────────────────────────
     if (phase === 'intake') {
       const system = intakePrompt(language);
       const msgs = userInput
@@ -236,70 +305,132 @@ export async function POST(request) {
       return NextResponse.json({ success: true, data: { agentText, isComplete } });
     }
 
-    // ── PLACEMENT ───────────────────────────────────────────────────────────
-    if (phase === 'placement') {
-      const system = placementPrompt(language);
-      const summary = history.map(m => `${m.role}: ${m.content}`).join('\n');
+    if (phase === 'transition') {
+      const system = transitionPrompt(language);
+      const summary = history.map((message) => `${message.role}: ${message.content}`).join('\n');
       const msgs = [{ role: 'user', content: `Intake conversation:\n${summary}` }];
 
-      const text = await callClaude(system, msgs);
+      const text = await callClaude(system, msgs, 500);
       const data = safeParseJSON(text);
 
-      return NextResponse.json({ success: true, data });
+      return NextResponse.json({
+        success: true,
+        data: {
+          startingLevel: 'novice_low',
+          rationale: data.rationale || 'This version always starts at Novice Low and moves upward step by step.',
+          transitionText: data.transitionText,
+        },
+      });
     }
 
-    // ── INTERVIEW ───────────────────────────────────────────────────────────
     if (phase === 'interview') {
-      const system = interviewerPrompt(language, state);
-      let msgs;
-      if (!userInput) {
-        // First question: no prior interview history
-        msgs = [{ role: 'user', content: 'Please begin the interview with your first question.' }];
-      } else {
-        msgs = [...history, { role: 'user', content: userInput }];
-      }
+      const normalizedState = {
+        ...state,
+        currentLevel: normalizeLevel(state.currentLevel, 'novice_low'),
+        highestSustainedLevel: isLevel(state.highestSustainedLevel) ? state.highestSustainedLevel : null,
+        breakdownLevel: isLevel(state.breakdownLevel) ? state.breakdownLevel : null,
+        scoringNotes: Array.isArray(state.scoringNotes) ? state.scoringNotes : [],
+        ladderJourney: appendJourney(state.ladderJourney, normalizeLevel(state.currentLevel, 'novice_low')),
+      };
 
-      const text = await callClaude(system, msgs, 600);
+      const system = interviewerPrompt(language, normalizedState);
+      const msgs = !userInput
+        ? [{ role: 'user', content: 'Please begin the interview with the first Novice Low question.' }]
+        : [...history, { role: 'user', content: userInput }];
+
+      const text = await callClaude(system, msgs, 700);
       const data = safeParseJSON(text);
 
-      // Update state with probe logic
-      const newState = { ...state };
-      newState.totalQuestions = (state.totalQuestions || 0) + (userInput ? 1 : 0);
-      newState.scoringNotes = [...(state.scoringNotes || [])];
-      if (data.scoringNote && userInput) newState.scoringNotes.push(data.scoringNote);
+      const newState = { ...normalizedState };
 
-      if (data.probeDirection === 'up') {
-        if (!newState.floorLevel) newState.floorLevel = state.currentLevel;
-        newState.currentLevel = shiftLevel(state.currentLevel, 1);
-        newState.questionsAtLevel = 0;
-      } else if (data.probeDirection === 'down') {
-        if (!newState.ceilingLevel) newState.ceilingLevel = state.currentLevel;
-        newState.currentLevel = shiftLevel(state.currentLevel, -1);
-        newState.questionsAtLevel = 0;
-      } else if (data.probeDirection === 'end') {
-        data.shouldEnd = true;
-      } else {
-        newState.questionsAtLevel = (state.questionsAtLevel || 0) + 1;
+      if (userInput) {
+        newState.totalQuestions = (normalizedState.totalQuestions || 0) + 1;
+        if (data.scoringNote) {
+          newState.scoringNotes = [...normalizedState.scoringNotes, data.scoringNote];
+        }
       }
 
-      if (newState.totalQuestions >= 20) data.shouldEnd = true;
+      const currentLevel = normalizedState.currentLevel;
+      const probeDirection = data.probeDirection || 'maintain';
+      const nextLevel = sanitizeNextLevel(currentLevel, data.nextLevel, probeDirection);
+
+      if (!userInput) {
+        newState.currentLevel = nextLevel;
+        newState.ladderJourney = appendJourney(newState.ladderJourney, nextLevel);
+        return NextResponse.json({ success: true, data, newState });
+      }
+
+      if (probeDirection === 'up') {
+        newState.highestSustainedLevel = currentLevel;
+        newState.currentLevel = nextLevel;
+        newState.questionsAtLevel = 0;
+      } else if (probeDirection === 'down') {
+        newState.breakdownLevel = normalizedState.breakdownLevel || currentLevel;
+        newState.currentLevel = nextLevel;
+        newState.questionsAtLevel = 0;
+      } else if (probeDirection === 'end') {
+        data.shouldEnd = true;
+
+        if (!newState.highestSustainedLevel && newState.breakdownLevel) {
+          newState.highestSustainedLevel = shiftLevel(newState.breakdownLevel, -1);
+        } else if (!newState.highestSustainedLevel) {
+          newState.highestSustainedLevel = currentLevel;
+        }
+      } else {
+        newState.currentLevel = nextLevel;
+        newState.questionsAtLevel = (normalizedState.questionsAtLevel || 0) + 1;
+      }
+
+      if (currentLevel === 'distinguished' && probeDirection !== 'down') {
+        newState.highestSustainedLevel = 'distinguished';
+      }
+
+      newState.ladderJourney = appendJourney(newState.ladderJourney, currentLevel, newState.currentLevel);
+
+      if (newState.totalQuestions >= MAX_QUESTIONS && !data.shouldEnd) {
+        data.shouldEnd = true;
+        if (!newState.highestSustainedLevel) {
+          newState.highestSustainedLevel = inferFinalLevel(newState);
+        }
+      }
 
       return NextResponse.json({ success: true, data, newState });
     }
 
-    // ── REPORT ──────────────────────────────────────────────────────────────
     if (phase === 'report') {
-      const system = reportPrompt(language, state);
+      const normalizedState = {
+        ...state,
+        currentLevel: normalizeLevel(state.currentLevel, 'novice_low'),
+        highestSustainedLevel: isLevel(state.highestSustainedLevel) ? state.highestSustainedLevel : null,
+        breakdownLevel: isLevel(state.breakdownLevel) ? state.breakdownLevel : null,
+        scoringNotes: Array.isArray(state.scoringNotes) ? state.scoringNotes : [],
+        ladderJourney: appendJourney(state.ladderJourney, normalizeLevel(state.currentLevel, 'novice_low')),
+      };
+
+      const inferredFinalLevel = inferFinalLevel(normalizedState);
+      const inferredNextTarget = inferNextTarget(normalizedState, inferredFinalLevel);
+      const system = reportPrompt(language, normalizedState, inferredFinalLevel, inferredNextTarget);
       const msgs = [{ role: 'user', content: 'Generate the final assessment report.' }];
 
       const text = await callClaude(system, msgs, 1200);
       const data = safeParseJSON(text);
 
-      return NextResponse.json({ success: true, data });
+      const finalLevel = normalizeLevel(data.finalLevel, inferredFinalLevel);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          ...data,
+          finalLevel,
+          levelDisplay: data.levelDisplay || LEVEL_DISPLAY[finalLevel],
+          rangeLabel: data.rangeLabel || `Novice Low -> ${LEVEL_DISPLAY[finalLevel]}`,
+          nextTarget: normalizeLevel(data.nextTarget, inferredNextTarget),
+          examinerNote: data.examinerNote || 'This result reflects the speaker’s current oral proficiency and their next likely stretch target on the ACTFL ladder.',
+        },
+      });
     }
 
     return NextResponse.json({ success: false, error: 'Unknown phase' }, { status: 400 });
-
   } catch (error) {
     console.error('Agent route error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

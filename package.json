@@ -1,7 +1,7 @@
 {
-  "name": "graduate-language-assessment",
+  "name": "language-assessment-interview",
   "version": "1.0.0",
-  "description": "UofN Graduate Studies Language Proficiency Assessment",
+  "description": "UofN Language Assessment Interview for general oral proficiency evaluation",
   "private": true,
   "scripts": {
     "dev": "next dev",

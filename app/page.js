@@ -22,7 +22,7 @@ function UofNLogo({ className, size = 52 }) {
   }
   return (
     <img
-      src="/logo.png"
+      src="/uofn-logo.png"
       alt="University of the Nations"
       className={className}
       width={size}
@@ -44,11 +44,12 @@ const LANGUAGES = [
 ];
 
 const INITIAL_ASSESSMENT_STATE = {
-  currentLevel: 'intermediate_mid',
+  currentLevel: 'novice_low',
   questionsAtLevel: 0,
   totalQuestions: 0,
-  floorLevel: null,
-  ceilingLevel: null,
+  highestSustainedLevel: null,
+  breakdownLevel: null,
+  ladderJourney: ['novice_low'],
   scoringNotes: [],
   userName: '',
 };
@@ -66,7 +67,7 @@ const LEVEL_DISPLAY = {
 export default function App() {
   // Screen / flow
   const [screen, setScreen]     = useState('welcome');   // welcome | interview | results
-  const [phase, setPhase]       = useState('intake');     // intake | placement | interview | report
+  const [phase, setPhase]       = useState('intake');     // intake | transition | interview | report
   const [language, setLanguage] = useState(LANGUAGES[0]);
 
   // Assessment state (sent to agent on each call)
@@ -75,7 +76,7 @@ export default function App() {
   // Conversation display
   const [messages, setMessages] = useState([]);
 
-  // Intake history (for intake + placement agents)
+  // Intake history (for intake + transition agents)
   const [intakeHistory, setIntakeHistory] = useState([]);
   // Interview history (separate, for interviewer agent)
   const [interviewHistory, setInterviewHistory] = useState([]);
@@ -256,7 +257,7 @@ export default function App() {
       await speakText(agentText);
 
       if (isComplete) {
-        await runPlacement(agentHistory);
+        await runTransition(agentHistory);
       }
     } catch (err) {
       console.error('Intake error:', err);
@@ -265,10 +266,10 @@ export default function App() {
     }
   }, [intakeHistory, callAgent, addMessage, speakText]);
 
-  // ── Flow: Placement ───────────────────────────────────────────────────────
+  // ── Flow: Transition ──────────────────────────────────────────────────────
 
-  const runPlacement = useCallback(async (finalIntakeHistory) => {
-    setPhase('placement');
+  const runTransition = useCallback(async (finalIntakeHistory) => {
+    setPhase('transition');
     setVoiceStatus('processing');
 
     try {
@@ -276,7 +277,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phase: 'placement',
+          phase: 'transition',
           language: language.id,
           history: finalIntakeHistory,
           state: assessStateRef.current,
@@ -295,8 +296,8 @@ export default function App() {
       setPhase('interview');
       await startInterview(newState, []);
     } catch (err) {
-      console.error('Placement error:', err);
-      addMessage('system', 'Placement error. Starting at Intermediate Mid.');
+      console.error('Transition error:', err);
+      addMessage('system', 'Setup error. Starting at Novice Low.');
       setPhase('interview');
       await startInterview(INITIAL_ASSESSMENT_STATE, []);
     }
@@ -322,6 +323,7 @@ export default function App() {
       if (!result.success) throw new Error(result.error);
 
       const { agentText } = result.data;
+      setAssessState(result.newState ?? initState);
       addMessage('agent', agentText);
       const newH = [{ role: 'assistant', content: agentText }];
       setInterviewHistory(newH);
@@ -405,7 +407,7 @@ export default function App() {
       setScreen('results');
     } catch (err) {
       console.error('Report error:', err);
-      addMessage('system', 'Error generating report. Please contact the admissions office.');
+      addMessage('system', 'Error generating report. Please try again or contact the assessment team.');
       setVoiceStatus('idle');
     }
   }, [language, addMessage, speakText]);
@@ -478,16 +480,6 @@ export default function App() {
     return <div className={`voice-status-text ${cls}`}>{label}</div>;
   };
 
-  const RecommendationPill = ({ rec }) => {
-    const map = {
-      ready:              ['pill-ready',         '✓ Ready for Admission'],
-      conditionally_ready:['pill-conditionally',  '◑ Conditionally Ready'],
-      needs_development:  ['pill-needs',          '○ Needs Language Development'],
-    };
-    const [cls, label] = map[rec] || ['', rec];
-    return <span className={`recommendation-pill ${cls}`}>{label}</span>;
-  };
-
   // ──────────────────────────────────────────────────────────────────────────
   // WELCOME SCREEN
   // ──────────────────────────────────────────────────────────────────────────
@@ -498,20 +490,21 @@ export default function App() {
           <UofNLogo className="header-logo" size={52} />
           <div className="header-titles">
             <span className="header-title">University of the Nations</span>
-            <span className="header-subtitle">YWAM · Graduate Studies</span>
+            <span className="header-subtitle">YWAM</span>
           </div>
         </header>
 
         <main className="welcome-screen">
           <UofNLogo className="welcome-seal" size={140} />
 
-          <h1 className="welcome-title">Graduate Studies Language<br />Proficiency Assessment</h1>
+          <h1 className="welcome-title">Language Assessment<br />Interview</h1>
           <p className="welcome-subtitle">Oral Proficiency Interview</p>
 
           <p className="welcome-intro">
-            This voice-based assessment measures your oral proficiency using the
-            Oral Proficiency Interview methodology. Speak naturally — there are no right or wrong answers.
-            The interview takes 15–25 minutes.
+            This voice-based interview measures your current oral proficiency in the selected
+            language using the Oral Proficiency Interview methodology. It begins at Novice Low and
+            climbs step by step until it finds the highest level you can sustain. Speak naturally —
+            there are no right or wrong answers. The interview takes 15–25 minutes.
           </p>
 
           <div className="divider" />
@@ -533,7 +526,7 @@ export default function App() {
           </div>
 
           <button className="start-btn" onClick={startAssessment}>
-            Begin Assessment →
+            Begin Interview →
           </button>
 
           <p className="browser-note">
@@ -564,12 +557,21 @@ export default function App() {
         <main className="results-screen">
           {/* Level Badge */}
           <div className="results-level-badge">
-            <span className="badge-label">Oral Proficiency Level</span>
+            <span className="badge-label">Current Assessed Oral Proficiency</span>
             <span className="badge-level">{results.levelDisplay}</span>
             <span className="badge-name">
-              {LEVEL_DISPLAY[results.finalLevel] ?? results.levelDisplay}
+              {results.rangeLabel ?? `Novice Low -> ${LEVEL_DISPLAY[results.finalLevel] ?? results.levelDisplay}`}
             </span>
-            <RecommendationPill rec={results.admissionsRecommendation} />
+          </div>
+
+          <div className="results-section">
+            <div className="results-section-title">Assessment Path</div>
+            <p className="results-summary">{results.progressionSummary}</p>
+            {results.nextTarget && (
+              <p className="results-meta">
+                Next stretch target: {LEVEL_DISPLAY[results.nextTarget] ?? results.nextTarget}
+              </p>
+            )}
           </div>
 
           {/* Summary */}
@@ -604,10 +606,10 @@ export default function App() {
             </div>
           </div>
 
-          {/* Admissions note */}
+          {/* Examiner note */}
           <div className="results-section">
-            <div className="results-section-title">Admissions Committee Note</div>
-            <p className="admissions-note">{results.admissionsNote}</p>
+            <div className="results-section-title">Examiner Note</div>
+            <p className="examiner-note">{results.examinerNote}</p>
           </div>
 
           <div className="results-actions">
@@ -618,8 +620,12 @@ export default function App() {
               setScreen('welcome');
               setPhase('intake');
               setMessages([]);
+              setIntakeHistory([]);
+              setInterviewHistory([]);
               setAssessState(INITIAL_ASSESSMENT_STATE);
               setResults(null);
+              setTranscript('');
+              setTextInput('');
             }}>
               New Assessment
             </button>
@@ -637,7 +643,7 @@ export default function App() {
       <header className="app-header">
         <UofNLogo className="header-logo" size={52} />
         <div className="header-titles">
-          <span className="header-title">Language Proficiency Assessment</span>
+          <span className="header-title">Language Assessment Interview</span>
           <span className="header-subtitle">University of the Nations · YWAM</span>
         </div>
         <div className="header-lang-badge">
